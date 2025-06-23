@@ -15,7 +15,7 @@ class GridWorldEnv(gym.Env):
         self.size = size
         self.n_agents = n_agents
         self.curriculum_level = curriculum_level
-        self.action_space = spaces.Discrete(4)  # up, down, left, right
+        self.action_space = spaces.Discrete(4) 
         self.observation_space = spaces.Box(low=0, high=size-1, shape=(2,), dtype=np.int32)
         self.reset()
 
@@ -25,13 +25,13 @@ class GridWorldEnv(gym.Env):
         return self._get_obs()
 
     def step(self, action):
-        if action == 0:   # up
+        if action == 0: 
             self.agent_pos[0] = max(self.agent_pos[0] - 1, 0)
-        elif action == 1: # down
+        elif action == 1: 
             self.agent_pos[0] = min(self.agent_pos[0] + 1, self.size-1)
-        elif action == 2: # left
+        elif action == 2: 
             self.agent_pos[1] = max(self.agent_pos[1] - 1, 0)
-        elif action == 3: # right
+        elif action == 3:
             self.agent_pos[1] = min(self.agent_pos[1] + 1, self.size-1)
         done = np.array_equal(self.agent_pos, self.goal_pos)
         reward = 1.0 if done else -0.01
@@ -47,8 +47,6 @@ class GridWorldEnv(gym.Env):
         grid[self.agent_pos[0], self.agent_pos[1]] = 'A'
         print('\n'.join(' '.join(row) for row in grid))
         print()
-# Fix for gym.spaces.Box dtype warning: use np.int32 for dtype, and set low/high as int
-# Also, ensure observation is returned as np.array of correct shape/type
 
     def reset(self):
         self.agent_pos = np.array([0, 0], dtype=np.int32)
@@ -57,13 +55,13 @@ class GridWorldEnv(gym.Env):
 
     def _get_obs(self):
         return np.array(self.agent_pos, dtype=np.int32)
-# Patch: Remove gym dependency and replace with minimal stubs if not installed
+
 
 try:
     import gym
     from gym import spaces
 except ImportError:
-    # Minimal stubs for gym and spaces
+ 
     import numpy as np
 
     class spaces:
@@ -107,7 +105,7 @@ class RobotEnv(gym.Env):
         return self.env.step(action)
 
     def render(self, mode='human'):
-        pass  # PyBullet GUI handles rendering
+        pass 
 
     def close(self):
         p.disconnect(self.physicsClient)
@@ -403,7 +401,7 @@ def train_ppo(env, episodes=200, steps_per_update=128):
                 rewards.append(ep_reward)
                 logger.log({'episode': ep, 'reward': ep_reward})
                 ep_reward = 0
-        # Compute returns and advantages
+     
         returns = []
         G = 0
         for r, d in zip(reversed(batch_rew), reversed(batch_done)):
