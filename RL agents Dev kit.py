@@ -1,5 +1,3 @@
-# Benchmark-ADK: Reinforcement Learning Toolkit
-# A modular framework for training and benchmarking RL agents
 
 import os
 import sys
@@ -9,7 +7,6 @@ import numpy as np
 from pathlib import Path
 from fastapi import FastAPI, Request
 
-# Add project root to path
 project_root = Path(__file__).parent
 sys.path.append(str(project_root))
 
@@ -30,7 +27,7 @@ def health():
 @app.post("/run-agent")
 async def run_agent(request: Request):
     data = await request.json()
-    # Placeholder for your agent logic
+
     return {"result": "Agent ran successfully", "input": data}
 
 class BenchmarkADK:
@@ -50,8 +47,7 @@ class BenchmarkADK:
         self.logger = Logger(self.config.get('logging', {}))
         self.visualizer = Visualizer(self.config.get('visualization', {}))
         self.replay_buffer = ReplayBuffer(self.config.get('replay_buffer', {}))
-        
-        # Initialize environment and agent
+   
         self.env = self._create_environment()
         self.agent = self._create_agent()
         
@@ -110,11 +106,9 @@ class BenchmarkADK:
             while True:
                 action = self.agent.select_action(state)
                 next_state, reward, done, info = self.env.step(action)
-                
-                # Store experience in replay buffer
+            
                 self.replay_buffer.add(state, action, reward, next_state, done)
-                
-                # Train agent if enough samples
+            
                 if len(self.replay_buffer) > self.config['training']['batch_size']:
                     batch = self.replay_buffer.sample(self.config['training']['batch_size'])
                     self.agent.train(batch)
@@ -129,13 +123,11 @@ class BenchmarkADK:
             episode_rewards.append(episode_reward)
             episode_lengths.append(episode_length)
             
-            # Log progress
             if episode % 100 == 0:
                 avg_reward = np.mean(episode_rewards[-100:])
                 avg_length = np.mean(episode_lengths[-100:])
                 self.logger.info(f"Episode {episode}: Avg Reward = {avg_reward:.2f}, Avg Length = {avg_length:.2f}")
                 
-                # Visualize training progress
                 self.visualizer.plot_training_progress(episode_rewards, episode_lengths)
         
         self.logger.info("Training completed")
@@ -163,7 +155,7 @@ class BenchmarkADK:
             episode_length = 0
             
             while True:
-                action = self.agent.select_action(state, epsilon=0.0)  # No exploration
+                action = self.agent.select_action(state, epsilon=0.0) 
                 next_state, reward, done, info = self.env.step(action)
                 
                 state = next_state
@@ -171,7 +163,7 @@ class BenchmarkADK:
                 episode_length += 1
                 
                 if done:
-                    if reward > 0:  # Assuming positive reward indicates success
+                    if reward > 0:  
                         success_rate += 1
                     break
             
@@ -209,13 +201,11 @@ class BenchmarkADK:
         for run in range(num_runs):
             self.logger.info(f"Benchmark run {run + 1}/{num_runs}")
             
-            # Train agent
+          
             train_rewards, train_lengths = self.train(self.config['training']['episodes'])
-            
-            # Evaluate agent
+        
             eval_metrics = self.evaluate(self.config['evaluation']['episodes'])
             
-            # Store results
             run_results = {
                 'run': run + 1,
                 'train_rewards': train_rewards,
@@ -223,11 +213,9 @@ class BenchmarkADK:
                 'eval_metrics': eval_metrics
             }
             benchmark_results.append(run_results)
-        
-        # Aggregate results
+       
         final_metrics = self._aggregate_benchmark_results(benchmark_results)
-        
-        # Visualize benchmark results
+       
         self.visualizer.plot_benchmark_results(benchmark_results, final_metrics)
         
         self.logger.info("Benchmark completed")
@@ -273,8 +261,7 @@ def main():
     parser.add_argument('--runs', type=int, help='Number of benchmark runs (overrides config)')
     
     args = parser.parse_args()
-    
-    # Initialize framework
+   
     if __name__ == "__main__":
         agent = DQNAgent()
         action = agent.act(None)
