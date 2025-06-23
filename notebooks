@@ -1,1 +1,826 @@
+!pip install gymnasium 
+!pip install pybullet
+!pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 
+!pip install numpy matplotlib seaborn 
+!pip install tqdm 
 
+import os
+import random
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+import gymnasium as gym
+from gymnasium import spaces
+from collections import deque
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm.notebook import tqdm 
+import time 
+
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False 
+
+print("Dependencies installed and random seeds set for reproducibility.")
+
+!mkdir -p devprime/envs
+!mkdir -p devprime/agents
+!mkdir -p devprime/utils
+
+!touch devprime/__init__.py
+!touch devprime/envs/__init__.py
+!touch devprime/agents/__init__.py
+!touch devprime/utils/__init__.py
+
+print("Simulated 'devprime' package directory structure.")
+
+print("devprime/utils/logger.py created.")
+
+print("devprime/utils/visualizer.py created.")
+
+print("devprime/envs/gridworld.py (Enhanced) created.")
+
+print("devprime/envs/robot_env.py (Placeholder) created.")
+
+print("devprime/agents/dqn.py (Enhanced) created.")
+
+print("devprime/agents/ppo.py (Placeholder) created.")
+
+import time
+
+class Logger:
+    """
+    A simple logger for tracking reinforcement learning training progress.
+    Provides methods to log episode-wise statistics and benchmark results.
+    """
+    def __init__(self, log_interval: int = 100):
+        self.log_interval = log_interval
+        self.start_time = time.time()
+        self.episode_count = 0
+        self.metrics_history = {}
+
+    def log_episode_metrics(self, episode: int, metrics: dict):
+        """
+        Logs metrics for a single episode.
+        Args:
+            episode (int): The current episode number.
+            metrics (dict): A dictionary of metrics for the episode (e.g., {'reward': ..., 'steps': ...}).
+        """
+        self.episode_count = episode
+        for key, value in metrics.items():
+            self.metrics_history.setdefault(key, []).append(value)
+
+        if episode % self.log_interval == 0:
+            elapsed_time = time.time() - self.start_time
+            avg_metrics = {key: sum(self.metrics_history[key][-self.log_interval:]) / self.log_interval
+                           for key in self.metrics_history}
+
+            log_msg = f"Episode {episode}/{self.episode_count} | Time Elapsed: {elapsed_time:.2f}s | "
+            log_msg += " | ".join([f"Avg {k}: {v:.2f}" for k, v in avg_metrics.items()])
+            print(log_msg)
+
+    def get_history(self) -> dict:
+        """Returns the full history of logged metrics."""
+        return self.metrics_history
+
+    def reset(self):
+        """Resets the logger state."""
+        self.start_time = time.time()
+        self.episode_count = 0
+        self.metrics_history = {}
+        print("Logger reset.")
+
+%%writefile devprime/utils/visualizer.py
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+class Visualizer:
+    """
+    Handles plotting of RL training metrics like reward curves and steps.
+    """
+    def __init__(self, style='seaborn-v0_8'):
+        plt.style.use(style)
+        sns.set_palette("viridis")
+
+    def plot_episode_metrics(self, history: dict, title_prefix: str = "", window_size: int = 1):
+        """
+        Plots various metrics (e.g., reward, steps) collected during training.
+        Supports smoothing with a rolling average window.
+
+        Args:
+            history (dict): Dictionary with metric names as keys and lists of values as values.
+            title_prefix (str): Prefix for plot titles (e.g., "DQN Training").
+            window_size (int): Size of the rolling average window for smoothing.
+                               Set to 1 for no smoothing.
+        """
+        if not history:
+            print("No data to plot.")
+            return
+
+        num_plots = len(history)
+        fig, axes = plt.subplots(1, num_plots, figsize=(6 * num_plots, 5))
+        if num_plots == 1:
+            axes = [axes]
+
+        for i, (metric_name, values) in enumerate(history.items()):
+            ax = axes[i]
+            if window_size > 1:
+
+                smoothed_values = np.convolve(values, np.ones(window_size)/window_size, mode='valid')
+                ax.plot(smoothed_values, label=f'Smoothed ({window_size} avg)', alpha=0.8)
+                ax.plot(values, label='Raw', alpha=0.3, linestyle='--')
+            else:
+                ax.plot(values)
+
+            ax.set_title(f'{title_prefix} {metric_name} Over Time')
+            ax.set_xlabel('Episode')
+            ax.set_ylabel(metric_name.replace('_', ' ').title())
+            ax.grid(True, linestyle='--', alpha=0.7)
+            if window_size > 1:
+                ax.legend()
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_comparison_metrics(self, comparison_data: dict, metric_name: str, title: str, window_size: int = 10):
+        """
+        Plots a single metric for multiple agents/runs for comparison.
+
+        Args:
+            comparison_data (dict): {'AgentName': [list_of_metric_values], ...}
+            metric_name (str): The name of the metric to plot (e.g., 'reward').
+            title (str): The title of the comparison plot.
+            window_size (int): Size of the rolling average window for smoothing.
+        """
+        plt.figure(figsize=(10, 6))
+        for agent_name, values in comparison_data.items():
+            if window_size > 1:
+                smoothed_values = np.convolve(values, np.ones(window_size)/window_size, mode='valid')
+                plt.plot(smoothed_values, label=f'{agent_name} (Smoothed)', alpha=0.8)
+            else:
+                plt.plot(values, label=agent_name, alpha=0.8)
+
+        plt.title(title)
+        plt.xlabel('Episode')
+        plt.ylabel(metric_name.replace('_', ' ').title())
+        plt.grid(True, linestyle='--', alpha=0.7)
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+
+%%writefile devprime/envs/gridworld.py
+import gymnasium as gym
+from gymnasium import spaces
+import numpy as np
+from typing import Tuple, List, Optional
+import random # Import the random module here
+
+class ObstacleGridWorld(gym.Env):
+    """
+    An enhanced GridWorld environment featuring obstacles.
+    The agent must navigate a grid, avoiding obstacles, to reach a target.
+    Rewards are structured to encourage reaching the target and penalize collisions/steps.
+    """
+    metadata = {"render_modes": ["human", "ansi"], "render_fps": 4}
+
+    def __init__(self, size: int = 8, num_obstacles: int = 5, render_mode: Optional[str] = None):
+        super(ObstacleGridWorld, self).__init__()
+        self.size = size
+        self.num_obstacles = num_obstacles
+        self.render_mode = render_mode
+
+        self.action_space = spaces.Discrete(4)
+
+        self.observation_space = spaces.Box(low=0, high=self.size - 1,
+                                            shape=(4,), dtype=np.int32)
+
+        self.agent_pos: np.ndarray = np.array([0, 0], dtype=np.int32)
+        self.target_pos: np.ndarray = np.array([0, 0], dtype=np.int32)
+        self.obstacles: List[np.ndarray] = []
+
+        self.window_surface = None
+        self.clock = None
+
+    def _get_obs(self) -> np.ndarray:
+        """
+        Returns the current observation as a flattened array: [agent_x, agent_y, target_x, target_y].
+        """
+        return np.concatenate([self.agent_pos, self.target_pos])
+
+    def _get_info(self) -> dict:
+        """
+        Returns additional information about the environment state.
+        Includes Manhattan distance to target and whether an obstacle was hit.
+        """
+        return {
+            "manhattan_distance_to_target": np.linalg.norm(self.agent_pos - self.target_pos, ord=1),
+            "hit_obstacle": self._is_colliding_with_obstacle(self.agent_pos)
+        }
+
+    def _generate_positions(self) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
+        """
+        Generates random positions for agent, target, and obstacles, ensuring no overlaps.
+        """
+        all_possible_positions = [(r, c) for r in range(self.size) for c in range(self.size)]
+        random.shuffle(all_possible_positions)
+
+        agent_p = np.array(all_possible_positions.pop(), dtype=np.int32)
+        target_p = np.array(all_possible_positions.pop(), dtype=np.int32)
+
+        obstacles_p: List[np.ndarray] = []
+        for _ in range(self.num_obstacles):
+            if not all_possible_positions:
+                break
+            obstacles_p.append(np.array(all_possible_positions.pop(), dtype=np.int32))
+
+        return agent_p, target_p, obstacles_p
+
+    def _is_colliding_with_obstacle(self, position: np.ndarray) -> bool:
+        """Checks if a given position is on an obstacle."""
+        for obs_pos in self.obstacles:
+            if np.array_equal(position, obs_pos):
+                return True
+        return False
+
+    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None) -> Tuple[np.ndarray, dict]:
+        """
+        Resets the environment to an initial state.
+        Args:
+            seed (int): Seed for random number generator.
+            options (dict): Optional dictionary for configuration (not used here).
+        Returns:
+            Tuple[np.ndarray, dict]: Initial observation and info dictionary.
+        """
+        super().reset(seed=seed)
+
+        self.agent_pos, self.target_pos, self.obstacles = self._generate_positions()
+
+        while self._is_colliding_with_obstacle(self.agent_pos) or np.array_equal(self.agent_pos, self.target_pos):
+            self.agent_pos, _, _ = self._generate_positions()
+
+        observation = self._get_obs()
+        info = self._get_info()
+
+        if self.render_mode == "human":
+            self.render()
+
+        return observation, info
+
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, dict]:
+        """
+        Takes an action in the environment.
+        Args:
+            action (int): The action to take (0=Up, 1=Down, 2=Left, 3=Right).
+        Returns:
+            Tuple[np.ndarray, float, bool, bool, dict]:
+                next_observation, reward, terminated, truncated, info.
+        """
+        direction_map = {
+            0: np.array([0, -1], dtype=np.int32),
+            1: np.array([0, 1], dtype=np.int32),
+            2: np.array([-1, 0], dtype=np.int32),
+            3: np.array([1, 0], dtype=np.int32),
+        }
+        direction = direction_map[action]
+
+        new_pos = np.clip(self.agent_pos + direction, 0, self.size - 1)
+
+        reward = -0.01
+        terminated = False
+        truncated = False
+
+
+        if self._is_colliding_with_obstacle(new_pos):
+            reward -= 1.0
+        else:
+            self.agent_pos = new_pos
+
+        if np.array_equal(self.agent_pos, self.target_pos):
+            reward += 10.0
+            terminated = True
+
+        observation = self._get_obs()
+        info = self._get_info()
+
+        if self.render_mode == "human":
+            self.render()
+
+        return observation, reward, terminated, truncated, info
+
+    def render(self):
+        """
+        Renders the GridWorld state. For 'human' mode, it prints a text-based grid.
+        """
+        if self.render_mode == "ansi":
+            grid = np.full((self.size, self.size), '.', dtype='<U1')
+            grid[self.target_pos[1], self.target_pos[0]] = 'T'
+            for obs_pos in self.obstacles:
+                grid[obs_pos[1], obs_pos[0]] = '#'
+            grid[self.agent_pos[1], self.agent_pos[0]] = 'A'
+
+            output = ""
+            for row in grid:
+                output += " ".join(row) + "\n"
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print(output)
+        elif self.render_mode == "human":
+            print(f"Agent: {self.agent_pos}, Target: {self.target_pos}, Obstacles: {self.obstacles}")
+
+    def close(self):
+        """Cleans up resources (e.g., PyGame window if implemented)."""
+        if self.window_surface is not None:
+            pass
+        self.window_surface = None
+        self.clock = None
+
+%%writefile devprime/envs/robot_env.py
+import gymnasium as gym
+from gymnasium import spaces
+import numpy as np
+
+class SimpleRobotEnv(gym.Env):
+    """
+    A placeholder for a simplified robotic environment using PyBullet.
+    In a full implementation, this would involve controlling a robot (e.g., a simple arm)
+    to reach a target or perform a manipulation task.
+    """
+    def __init__(self, render_mode=None):
+        super(SimpleRobotEnv, self).__init__()
+        self.render_mode = render_mode
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(4,), dtype=np.float32) # Example: [robot_x, robot_y, target_x, target_y]
+
+
+        self.robot_pos = np.array([0.0, 0.0], dtype=np.float32)
+        self.target_pos = np.array([0.0, 0.0], dtype=np.float32)
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.robot_pos = self.np_random.uniform(low=-0.5, high=0.5, size=2).astype(np.float32)
+        self.target_pos = self.np_random.uniform(low=-0.5, high=0.5, size=2).astype(np.float32)
+        observation = np.concatenate([self.robot_pos, self.target_pos])
+        info = {"distance_to_target": np.linalg.norm(self.robot_pos - self.target_pos)}
+        return observation, info
+
+    def step(self, action):
+
+        self.robot_pos += action * 0.1
+        reward = -np.linalg.norm(self.robot_pos - self.target_pos)
+        terminated = np.linalg.norm(self.robot_pos - self.target_pos) < 0.1
+        truncated = False
+        observation = np.concatenate([self.robot_pos, self.target_pos])
+        info = {"distance_to_target": np.linalg.norm(self.robot_pos - self.target_pos)}
+        return observation, reward, terminated, truncated, info
+
+    def render(self):
+        if self.render_mode == "human":
+            print(f"Robot: {self.robot_pos:.2f}, Target: {self.target_pos:.2f}")
+        pass
+
+    def close(self):
+
+        pass
+
+%%writefile devprime/agents/dqn.py
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+import numpy as np
+from collections import deque
+import random
+from typing import Tuple, List, Dict, Optional
+
+class QNetwork(nn.Module):
+    """
+    The neural network architecture for the Q-function in DQN.
+    It takes a state as input and outputs Q-values for each possible action.
+    """
+    def __init__(self, obs_dim: int, action_dim: int, hidden_size: int = 64):
+        super(QNetwork, self).__init__()
+        self.fc1 = nn.Linear(obs_dim, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, action_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through the Q-network.
+        Args:
+            x (torch.Tensor): Input state tensor.
+        Returns:
+            torch.Tensor: Output Q-values for each action.
+        """
+        x = F.relu(self.fc1(x.float()))
+        x = F.relu(self.fc2(x))
+        return self.fc3(x)
+
+class DQNAgent:
+    """
+    Deep Q-Network (DQN) Agent implementation with key features:
+    - Epsilon-greedy action selection for exploration.
+    - Experience Replay Buffer for stable training.
+    - Separate Target Network for stable Q-value estimation.
+    - Gradient clipping to prevent exploding gradients.
+    """
+    def __init__(self, obs_dim: int, action_dim: int,
+                 lr: float = 1e-3, gamma: float = 0.99,
+                 epsilon_start: float = 1.0, epsilon_end: float = 0.01,
+                 epsilon_decay: float = 0.995, batch_size: int = 64,
+                 buffer_size: int = 10000, target_update_freq: int = 100,
+                 gradient_clip_norm: float = 1.0,
+                 device: str = 'cpu', hidden_size: int = 64):
+
+        self.action_dim = action_dim
+        self.gamma = gamma
+        self.epsilon = epsilon_start
+        self.epsilon_end = epsilon_end
+        self.epsilon_decay = epsilon_decay
+        self.batch_size = batch_size
+        self.device = device
+        self.target_update_freq = target_update_freq
+        self.gradient_clip_norm = gradient_clip_norm
+        self.learn_step_counter = 0
+
+
+        self.policy_net = QNetwork(obs_dim, action_dim, hidden_size).to(device)
+        self.target_net = QNetwork(obs_dim, action_dim, hidden_size).to(device)
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()
+
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
+        self.memory = deque(maxlen=buffer_size)
+
+    def select_action(self, state: np.ndarray) -> int:
+        """
+        Selects an action using an epsilon-greedy policy.
+        Args:
+            state (np.ndarray): Current observation from the environment.
+        Returns:
+            int: The chosen action.
+        """
+        if random.random() < self.epsilon:
+            return random.randrange(self.action_dim)
+        else:
+            with torch.no_grad():
+                state_tensor = torch.tensor(state, device=self.device, dtype=torch.float).unsqueeze(0)
+                q_values = self.policy_net(state_tensor)
+                return q_values.argmax(1).item()
+
+    def store_experience(self, state: np.ndarray, action: int, reward: float,
+                         next_state: np.ndarray, done: bool):
+        """
+        Stores a transition (s, a, r, s', done) in the replay buffer.
+        Args:
+            state (np.ndarray): Current state.
+            action (int): Action taken.
+            reward (float): Reward received.
+            next_state (np.ndarray): Next state.
+            done (bool): Whether the episode terminated.
+        """
+        self.memory.append((state, action, reward, next_state, done))
+
+    def learn(self):
+        """
+        Performs one step of optimization on the policy network using a batch
+        of experiences sampled from the replay buffer.
+        """
+        if len(self.memory) < self.batch_size:
+            return
+
+        transitions = random.sample(self.memory, self.batch_size)
+
+        states, actions, rewards, next_states, dones = zip(*transitions)
+
+        states = torch.tensor(np.array(states), device=self.device, dtype=torch.float)
+        actions = torch.tensor(actions, device=self.device, dtype=torch.long).unsqueeze(1)
+        rewards = torch.tensor(rewards, device=self.device, dtype=torch.float).unsqueeze(1)
+        next_states = torch.tensor(np.array(next_states), device=self.device, dtype=torch.float)
+        dones = torch.tensor(dones, device=self.device, dtype=torch.float).unsqueeze(1)
+
+        q_values = self.policy_net(states).gather(1, actions)
+
+        next_q_values = self.target_net(next_states).max(1)[0].unsqueeze(1)
+
+        target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
+
+        loss = F.smooth_l1_loss(q_values, target_q_values)
+
+        self.optimizer.zero_grad()
+        loss.backward()
+
+        for param in self.policy_net.parameters():
+            param.grad.data.clamp_(-self.gradient_clip_norm, self.gradient_clip_norm)
+        self.optimizer.step()
+
+        self.learn_step_counter += 1
+        if self.learn_step_counter % self.target_update_freq == 0:
+            self.update_target_network()
+
+    def update_target_network(self):
+        """
+        Copies weights from the policy network to the target network.
+        This update is typically done less frequently than learning steps.
+        """
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()
+
+    def decay_epsilon(self):
+        """
+        Decays the epsilon value for epsilon-greedy action selection.
+        This reduces exploration over time and increases exploitation.
+        """
+        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+
+    def save_model(self, path: str):
+        """
+        Saves the state dictionary of the policy network to a specified path.
+        Args:
+            path (str): File path to save the model.
+        """
+        torch.save(self.policy_net.state_dict(), path)
+        print(f"DQN policy model saved to {path}")
+
+    def load_model(self, path: str):
+        """
+        Loads the state dictionary into the policy network and updates the target network.
+        Args:
+            path (str): File path to load the model from.
+        """
+        self.policy_net.load_state_dict(torch.load(path, map_location=self.device))
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()
+        print(f"DQN policy model loaded from {path}")
+
+    def export_torchscript(self, path: str):
+        """
+        Exports the policy network to TorchScript format.
+        TorchScript models can be deployed without Python dependencies, e.g., in C++ environments.
+        Args:
+            path (str): File path to save the TorchScript model.
+        """
+
+        example_input = torch.zeros(1, self.policy_net.fc1.in_features, device=self.device)
+
+        traced_script_module = torch.jit.trace(self.policy_net, example_input)
+        traced_script_module.save(path)
+        print(f"TorchScript model exported to {path}")
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.distributions import Categorical
+import numpy as np
+from typing import Tuple, List, Dict, Optional
+
+class ActorCritic(nn.Module):
+    """
+    A placeholder for a combined Actor-Critic network for PPO.
+    The actor proposes actions (policy), and the critic estimates state values.
+    """
+    def __init__(self, obs_dim: int, action_dim: int, hidden_size: int = 64):
+        super(ActorCritic, self).__init__()
+        self.actor = nn.Sequential(
+            nn.Linear(obs_dim, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, action_dim)
+        )
+        self.critic = nn.Sequential(
+            nn.Linear(obs_dim, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, 1)
+        )
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass.
+        Args:
+            x (torch.Tensor): Input state tensor.
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Action probabilities (logits) from actor,
+                                               and value estimate from critic.
+        """
+        action_logits = self.actor(x.float())
+        value = self.critic(x.float())
+        return action_logits, value
+
+class PPOAgent:
+    """
+    Placeholder for a Proximal Policy Optimization (PPO) agent.
+    PPO is an on-policy algorithm that optimizes a 'clipped' surrogate objective.
+    """
+    def __init__(self, obs_dim: int, action_dim: int,
+                 lr: float = 3e-4, gamma: float = 0.99, gae_lambda: float = 0.95,
+                 clip_epsilon: float = 0.2, ppo_epochs: int = 10,
+                 batch_size: int = 64, device: str = 'cpu', hidden_size: int = 64):
+
+        self.actor_critic = ActorCritic(obs_dim, action_dim, hidden_size).to(device)
+        self.optimizer = optim.Adam(self.actor_critic.parameters(), lr=lr)
+        self.gamma = gamma
+        self.gae_lambda = gae_lambda
+        self.clip_epsilon = clip_epsilon
+        self.ppo_epochs = ppo_epochs
+        self.batch_size = batch_size
+        self.device = device
+
+        self.buffer = []
+
+    def select_action(self, state: np.ndarray) -> Tuple[int, torch.Tensor, torch.Tensor]:
+        """
+        Selects an action based on the current policy.
+        Args:
+            state (np.ndarray): Current observation.
+        Returns:
+            Tuple[int, torch.Tensor, torch.Tensor]: Action, log probability of action, and state value.
+        """
+        state_tensor = torch.tensor(state, dtype=torch.float, device=self.device).unsqueeze(0)
+        action_logits, value = self.actor_critic(state_tensor)
+
+        probs = F.softmax(action_logits, dim=-1)
+        dist = Categorical(probs)
+        action = dist.sample()
+        log_prob = dist.log_prob(action)
+
+        return action.item(), log_prob, value.item()
+
+    def store_experience(self, state: np.ndarray, action: int, reward: float,
+                         next_state: np.ndarray, done: bool, log_prob: torch.Tensor, value: float):
+        """
+        Stores experience in the PPO buffer.
+        """
+        self.buffer.append((state, action, reward, next_state, done, log_prob, value))
+
+    def learn(self):
+        """
+        Performs PPO optimization using experiences collected in the buffer.
+        """
+        if not self.buffer:
+            return
+
+        states, actions, rewards, next_states, dones, old_log_probs, values = zip(*self.buffer)
+
+        states = torch.tensor(np.array(states), dtype=torch.float, device=self.device)
+        actions = torch.tensor(actions, dtype=torch.long, device=self.device).unsqueeze(1)
+        rewards = torch.tensor(rewards, dtype=torch.float, device=self.device).unsqueeze(1)
+        next_states = torch.tensor(np.array(next_states), dtype=torch.float, device=self.device)
+        dones = torch.tensor(dones, dtype=torch.float, device=self.device).unsqueeze(1)
+        old_log_probs = torch.tensor(old_log_probs, dtype=torch.float, device=self.device).unsqueeze(1)
+        values = torch.tensor(values, dtype=torch.float, device=self.device).unsqueeze(1)
+
+        self.buffer = []
+
+        for _ in range(self.ppo_epochs):
+
+            action_logits, new_values = self.actor_critic(states)
+            dist = Categorical(F.softmax(action_logits, dim=-1))
+            new_log_probs = dist.log_prob(actions.squeeze(1)).unsqueeze(1)
+
+            ratio = torch.exp(new_log_probs - old_log_probs)
+
+            advantages = rewards + self.gamma * (1 - dones) * new_values.detach() - values
+
+            surr1 = ratio * advantages
+            surr2 = torch.clamp(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * advantages
+            actor_loss = -torch.min(surr1, surr2).mean()
+
+            critic_loss = F.mse_loss(new_values, rewards + self.gamma * (1 - dones) * new_values.detach())
+
+            loss = actor_loss + 0.5 * critic_loss
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+    def save_model(self, path: str):
+        """Saves the ActorCritic network's state dictionary."""
+        torch.save(self.actor_critic.state_dict(), path)
+        print(f"PPO ActorCritic model saved to {path}")
+
+    def load_model(self, path: str):
+        """Loads the ActorCritic network's state dictionary."""
+        self.actor_critic.load_state_dict(torch.load(path, map_location=self.device))
+        print(f"PPO ActorCritic model loaded from {path}")
+
+    def export_torchscript(self, path: str):
+        """Exports the ActorCritic network to TorchScript."""
+        example_input = torch.zeros(1, self.actor_critic.actor[0].in_features, device=self.device)
+        traced_script_module = torch.jit.trace(self.actor_critic, example_input)
+        traced_script_module.save(path)
+        print(f"TorchScript model exported to {path}")
+
+from devprime.envs.gridworld import ObstacleGridWorld
+from devprime.agents.dqn import DQNAgent
+from devprime.utils.logger import Logger
+from devprime.utils.visualizer import Visualizer
+
+env = ObstacleGridWorld(size=8, num_obstacles=5, render_mode="ansi")
+obs_dim = env.observation_space.shape[0]
+action_dim = env.action_space.n
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+dqn_agent = DQNAgent(
+    obs_dim=obs_dim,
+    action_dim=action_dim,
+    lr=5e-4,
+    gamma=0.99,
+    epsilon_start=1.0,
+    epsilon_end=0.05,
+    epsilon_decay=0.99,
+    batch_size=128,
+    buffer_size=50000,
+    target_update_freq=500,
+    gradient_clip_norm=1.0,
+    hidden_size=128,
+    device=device
+)
+
+num_episodes = 1000
+log_interval = 50
+plot_smoothing_window = 50
+
+logger = Logger(log_interval=log_interval)
+visualizer = Visualizer()
+
+print("\n Starting DQN Training on ObstacleGridWorld")
+for episode in tqdm(range(1, num_episodes + 1), desc="Training Progress"):
+    state, info = env.reset()
+    total_reward = 0.0
+    steps = 0
+    done = False
+    truncated = False
+    episode_start_time = time.time()
+
+    while not done and not truncated:
+        action = dqn_agent.select_action(state)
+        next_state, reward, done, truncated, info = env.step(action)
+
+        dqn_agent.store_experience(state, action, reward, next_state, done)
+
+        dqn_agent.learn()
+
+        state = next_state
+        total_reward += reward
+        steps += 1
+
+    dqn_agent.decay_epsilon()
+
+    episode_metrics = {
+        'reward': total_reward,
+        'steps': steps,
+        'episode_duration': time.time() - episode_start_time
+    }
+    logger.log_episode_metrics(episode, episode_metrics)
+
+print("\n--- Training Complete! ---")
+env.close()
+
+print("--- Generating Training Plots ---")
+training_history = logger.get_history()
+
+visualizer.plot_episode_metrics(training_history,
+                                 title_prefix="DQN Training",
+                                 window_size=plot_smoothing_window)
+
+
+print("Plots generated successfully.")
+
+
+
+MODEL_SAVE_DIR = "trained_models"
+os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+
+DQN_MODEL_PATH = os.path.join(MODEL_SAVE_DIR, "gridworld_dqn_agent.pth")
+DQN_TORCHSCRIPT_PATH = os.path.join(MODEL_SAVE_DIR, "gridworld_dqn_agent_script.pt")
+
+print("\n--- Demonstrating Model Persistence and Export ---")
+
+print(f"Saving DQN model to: {DQN_MODEL_PATH}")
+dqn_agent.save_model(DQN_MODEL_PATH)
+
+print(f"\nLoading DQN model from: {DQN_MODEL_PATH}")
+loaded_dqn_agent = DQNAgent(
+    obs_dim=obs_dim,
+    action_dim=action_dim,
+    device=device
+)
+loaded_dqn_agent.load_model(DQN_MODEL_PATH)
+print("DQN model successfully loaded into a new agent instance.")
+
+print(f"\nExporting DQN policy network to TorchScript: {DQN_TORCHSCRIPT_PATH}")
+dqn_agent.export_torchscript(DQN_TORCHSCRIPT_PATH)
+print("TorchScript export complete. You can now use this file for deployment.")
+
+print("\n--- End of Model Persistence and Export Demonstration ---")
+print(f"The trained model weights are saved at: {DQN_MODEL_PATH}")
+print(f"The TorchScript model is saved at: {DQN_TORCHSCRIPT_PATH}")
+print("You can find these files in the Colab 'Files' section and download them.")
